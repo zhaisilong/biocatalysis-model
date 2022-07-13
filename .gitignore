@@ -134,3 +134,10 @@ dmypy.json
 # Ignore figures and tables
 /figures/svg/*
 /figures/tables/*
+
+experiments/
+model/
+preprocessing/
+logs/
+data/
+.idea/

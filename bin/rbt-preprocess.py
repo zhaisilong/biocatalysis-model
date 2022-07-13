@@ -5,6 +5,9 @@ from typing import List, Tuple
 from pathlib import Path
 from collections import Counter
 
+from rich.progress import Progress, SpinnerColumn, TimeElapsedColumn
+
+from utils import get_logger, iter_count
 import click
 import pandas as pd
 from tqdm import trange
@@ -17,9 +20,12 @@ from rxn_biocatalysis_tools import (
     disable_rdkit_logging,
 )
 
+log = get_logger(__name__)
+
+
 
 def process_reaction(
-    rxn: EnzymaticReaction, min_atom_count: int = 4
+        rxn: EnzymaticReaction, min_atom_count: int = 4
 ) -> EnzymaticReaction:
     """Removing precursors from products, remove molecules that couldn't be parsed by RDKit
     and remove single atoms from productsself.
@@ -42,7 +48,7 @@ def process_reaction(
 
 
 def remove_from_products(
-    rxn: EnzymaticReaction, smart_patterns: List[str], smiles: List[str]
+        rxn: EnzymaticReaction, smart_patterns: List[str], smiles: List[str]
 ) -> EnzymaticReaction:
     """Remove the supplied cofactors from the products.
 
@@ -98,9 +104,9 @@ def write_splits(df: pd.DataFrame, ec_level: int, output_dir: Path) -> None:
     """
     df_internal = df.copy()
     splits = {}
-    splits["train"] = pd.DataFrame(columns=df_internal.columns)
-    splits["valid"] = pd.DataFrame(columns=df_internal.columns)
-    splits["test"] = pd.DataFrame(columns=df_internal.columns)
+    splits["train"] = pd.DataFrame(columns=df_internal.columns, dtype='object')
+    splits["valid"] = pd.DataFrame(columns=df_internal.columns, dtype='object')
+    splits["test"] = pd.DataFrame(columns=df_internal.columns, dtype='object')
 
     df_internal[["rxn_str"]].to_csv(
         Path(output_dir, "combined.txt"), header=False, index=False
@@ -199,15 +205,15 @@ def write_splits(df: pd.DataFrame, ec_level: int, output_dir: Path) -> None:
     help="Wheter to split reactions with multiple products into multiple reactions with one product",
 )
 def main(
-    input_files: str,
-    output_path: str,
-    remove_patterns_path: str,
-    remove_molecules_path: str,
-    ec_levels: Tuple[int, ...],
-    max_products: int,
-    min_atom_count: int,
-    bi_directional: bool,
-    split_products: bool,
+        input_files: str,
+        output_path: str,
+        remove_patterns_path: str,
+        remove_molecules_path: str,
+        ec_levels: Tuple[int, ...],
+        max_products: int,
+        min_atom_count: int,
+        bi_directional: bool,
+        split_products: bool,
 ):
     disable_rdkit_logging()
     remove_patterns = []
@@ -232,71 +238,70 @@ def main(
         source = Path(input_file).stem
         line_count = sum([1 for line in open(input_file, "r")])
 
-        print(f"Parsing {source}...")
         with open(input_file, "r") as f:
-            for line in f:
-                rxn = EnzymaticReaction(line.strip(), canonical=True, source=source)
-                enzymatic_reactions.append(rxn)
-                if bi_directional:
-                    enzymatic_reactions.append(rxn.reverse())
-        print("Done.\n")
+            with Progress(SpinnerColumn(), *Progress.get_default_columns(), "Elapsed:",
+                          TimeElapsedColumn()) as progress:
+                for line in progress.track(f, total=iter_count(input_file), description=f"Parsing {source}..."):
+                    rxn = EnzymaticReaction(line.strip(), canonical=True, source=source)
+                    enzymatic_reactions.append(rxn)
+                    if bi_directional:
+                        enzymatic_reactions.append(rxn.reverse())
+        log.info("Done.\n")
 
     print_sources(enzymatic_reactions, "Parsed Reactions")
 
-    print(f"Processing reactions...")
-    for i, rxn in enumerate(enzymatic_reactions):
-        enzymatic_reactions[i] = process_reaction(rxn, min_atom_count)
-    print("Done.\n")
+    with Progress(SpinnerColumn(), *Progress.get_default_columns(), "Elapsed:", TimeElapsedColumn()) as progress:
+        for i, rxn in progress.track(enumerate(enzymatic_reactions), total=len(enzymatic_reactions),
+                                     description=f"Processing reactions..."):
+            enzymatic_reactions[i] = process_reaction(rxn, min_atom_count)
+    log.info("Done.\n")
 
-    print("Removing patterns and molecules...")
-    for i, rxn in enumerate(enzymatic_reactions):
-        enzymatic_reactions[i] = remove_from_products(
-            rxn, remove_patterns, remove_molecules
-        )
-    print("Done.\n")
+    with Progress(SpinnerColumn(), *Progress.get_default_columns(), "Elapsed:", TimeElapsedColumn()) as progress:
+        for i, rxn in progress.track(enumerate(enzymatic_reactions), total=len(enzymatic_reactions),
+                                     description="Removing patterns and molecules..."):
+            enzymatic_reactions[i] = remove_from_products(
+                rxn, remove_patterns, remove_molecules
+            )
+    log.info("Done.\n")
 
     if split_products:
-        print(
-            "Splitting multi-product reactions into multiple one-product reactions..."
-        )
         split_enzymatic_reactions = []
-        for rxn in enzymatic_reactions:
-            if len(rxn.products) == 1:
-                split_enzymatic_reactions.append(rxn)
-            else:
-                for product in rxn.get_products_as_smiles():
-                    split_enzymatic_reactions.append(
-                        EnzymaticReaction.from_smarts_and_ec(
-                            ".".join(rxn.get_reactants_as_smiles()) + ">>" + product,
-                            rxn.get_ec(),
-                            source=rxn.source,
+        with Progress(SpinnerColumn(), *Progress.get_default_columns(), "Elapsed:", TimeElapsedColumn()) as progress:
+            for rxn in progress.track(enzymatic_reactions, total=len(enzymatic_reactions),
+                                      description="Splitting multi-product reactions into multiple one-product reactions..."):
+                if len(rxn.products) == 1:
+                    split_enzymatic_reactions.append(rxn)
+                else:
+                    for product in rxn.get_products_as_smiles():
+                        split_enzymatic_reactions.append(
+                            EnzymaticReaction.from_smarts_and_ec(
+                                ".".join(rxn.get_reactants_as_smiles()) + ">>" + product,
+                                rxn.get_ec(),
+                                source=rxn.source,
+                            )
                         )
-                    )
         enzymatic_reactions = split_enzymatic_reactions
-        print("Done.\n")
+        log.info("Done.\n")
 
-    print(
-        f"Removing reactions with less than 2 reactans or more than {max_products} product(s)..."
+    log.info(
+        f"Removing reactions with less than 2 reactants or more than {max_products} product(s)..."
     )
-    enzymatic_reactions = [
-        rxn
-        for rxn in enzymatic_reactions
-        if len(rxn.reactants) > 0
-        and len(rxn.products) <= max_products
-        and len(rxn.products) > 0
-    ]
-    print("Done.\n")
 
-    print("Ordering molecules on both sides of the reactions...")
+    enzymatic_reactions = [rxn for rxn in enzymatic_reactions if
+                           len(rxn.reactants) > 0 and len(rxn.products) <= max_products and len(rxn.products) > 0]
+
+    log.info("Done.\n")
+
+    log.info("Ordering molecules on both sides of the reactions...")
     for rxn in enzymatic_reactions:
         rxn.sort()
-    print("Done.")
+    log.info("Done.")
 
     print_sources(enzymatic_reactions, "Reactions after Filtering")
 
     df = pd.DataFrame({"rxn": enzymatic_reactions})
 
-    print("Processing reactions for export...")
+    log.info("Processing reactions for export...")
 
     cols = {}
 
@@ -333,8 +338,7 @@ def main(
     df = df[(df.ec != "") & (df.ec != " ")]
     df = df.drop_duplicates(subset=[f"rxn_str"], keep="first")
 
-    print("Done.\n")
-
+    log.info("Done.\n")
     print_sources(df.rxn, "Reactions after Deduplication")
 
     df[["rxn_str", "ec", "source"]].to_csv(
@@ -343,7 +347,7 @@ def main(
 
     tasks = [f"exporting EC level {ec_level}" for ec_level in ec_levels]
 
-    print("Exporting src and tgt files...")
+    log.info("Exporting src and tgt files...")
     for ec_level in ec_levels:
         task = tasks.pop(0)
 
@@ -354,6 +358,7 @@ def main(
         # columns with .loc, please change it. Otherwise surpress the warning
         # to get clean console output.
         pd.options.mode.chained_assignment = None
+
         df_tmp[["reactants", "products"]] = df_tmp[
             f"rxn_str_ec{ec_level}_tok"
         ].str.split(">>", expand=True)
@@ -366,7 +371,7 @@ def main(
 
         write_splits(df_tmp, ec_level, parent_dir)
 
-        print(f"{task} complete ({len(df_tmp)} unique reactions).")
+        log.info(f"{task} complete ({len(df_tmp)} unique reactions).")
 
 
 if __name__ == "__main__":
