@@ -28,3 +28,25 @@ def get_logger(name: Optional[str] = None, filename: Optional[str] = None, level
         format='%(name)s: %(message)s',
         handlers=handlers)
     return logging.getLogger(name)
+
+
+
+def show_ratio(df, label='label', sort=None, n=5) -> None:
+    """df 的标签中的各类比值
+        Args:
+            sort: 'value' or 'label'
+    """
+    n_all = len(df)
+    if sort == 'value':
+        n_classes = df[label].value_counts().reset_index().sort_values(by=label, ascending=False)
+    elif sort == 'label':
+        n_classes = df[label].value_counts().reset_index().sort_values(by='index')
+    else:
+        n_classes = df[label].value_counts().reset_index()
+
+    n_classes = n_classes[:n]
+
+    for i in n_classes.index:
+        print(f'标签 {n_classes.at[i, "index"]} 比例为: {n_classes.at[i, label] / n_all * 100:.2f}%, 个数为: {n_classes.at[i, label]}')
+
+
